@@ -25,7 +25,7 @@ class koaJsonRpc {
   }
   app () {
     return async (ctx, next) => {
-      let body, result;
+      let body;
       if (this.token) {
         const headerToken = ctx.get('authorization').split(' ').pop();
         if (headerToken !== this.token) {
@@ -41,25 +41,57 @@ class koaJsonRpc {
         return;
       }
 
-      if (body.jsonrpc !== '2.0' || !hasOwnProperty(body, 'method') || !hasOwnProperty(body, 'id') || ctx.request.method !== 'POST') {
-        ctx.body = jsonResp(body.id || null, jsonError.InvalidRequest());
-        return;
-      }
-      if (!this.registry[body.method]) {
-        ctx.body = jsonResp(body.id, jsonError.MethodNotFound());
-        return;
-      }
-      try {
-        result = await this.registry[body.method](body.params);
-      } catch (e) {
-        if (e instanceof InvalidParamsError) {
-          ctx.body = jsonResp(body.id, jsonError.InvalidParams(e.message));
+      if (!Array.isArray(body)) {
+        let result;
+        let rpcCall = body;
+
+        if (rpcCall.jsonrpc !== '2.0' || !hasOwnProperty(rpcCall, 'method') || !hasOwnProperty(rpcCall, 'id') || ctx.request.method !== 'POST') {
+          ctx.body = jsonResp(rpcCall.id || null, jsonError.InvalidRequest());
           return;
         }
-        ctx.body = jsonResp(body.id, jsonError.InternalError(e.message));
-        return;
+        if (!this.registry[rpcCall.method]) {
+          ctx.body = jsonResp(rpcCall.id, jsonError.MethodNotFound());
+          return;
+        }
+        try {
+          result = await this.registry[rpcCall.method](rpcCall.params);
+        } catch (e) {
+          if (e instanceof InvalidParamsError) {
+            ctx.body = jsonResp(rpcCall.id, jsonError.InvalidParams(e.message));
+            return;
+          }
+          ctx.body = jsonResp(rpcCall.id, jsonError.InternalError(e.message));
+          return;
+        }
+        ctx.body = jsonResp(rpcCall.id, null, result);
+      } else {
+        let promises = [];
+
+        for (let i = 0; i < body.length; i++) {
+          let rpcCall = body[i];
+
+          if (rpcCall.jsonrpc !== '2.0' || !hasOwnProperty(rpcCall, 'method') || !hasOwnProperty(rpcCall, 'id') || ctx.request.method !== 'POST') {
+            ctx.body = jsonResp(rpcCall.id || null, jsonError.InvalidRequest());
+            return;
+          }
+          if (!this.registry[rpcCall.method]) {
+            ctx.body = jsonResp(rpcCall.id, jsonError.MethodNotFound());
+            return;
+          }
+
+
+          let promise = this.registry[rpcCall.method](rpcCall.params)
+              .catch((e=>{
+                  if (e instanceof InvalidParamsError) {
+                    ctx.body = jsonResp(rpcCall.id, jsonError.InvalidParams(e.message));
+                    return;
+                  }
+                  ctx.body = jsonResp(rpcCall.id, jsonError.InternalError(e.message));
+              })).then(value => jsonResp(rpcCall.id, null, value));
+          promises.push(promise);
+        }
+        ctx.body = await Promise.all(promises);
       }
-      ctx.body = jsonResp(body.id, null, result);
     };
   }
 }
